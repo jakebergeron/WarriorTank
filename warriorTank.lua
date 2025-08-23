@@ -36,9 +36,18 @@ function WarriorTank_main()
 			end;
 	end;
 	
-	local sbStart, sbDuration, sbEnabled = GetSpellCooldown(ids[1], BOOKTYPE_SPELL);
-	local mainStart, mainDuration, mainEnabled = GetSpellCooldown(ids[5], BOOKTYPE_SPELL);
-	local reveStart, revDuration, revEnabled = GetSpellCooldown(ids[2], BOOKTYPE_SPELL);
+	-- Get spell cooldowns safely
+	local function safeGetSpellCooldown(spellId)
+	    if spellId ~= nil then
+	        return GetSpellCooldown(spellId, BOOKTYPE_SPELL)
+	    else
+	        return 0, 0, 0
+	    end
+	end
+
+	local sbStart, sbDuration, sbEnabled = safeGetSpellCooldown(ids[1])
+	local mainStart, mainDuration, mainEnabled = safeGetSpellCooldown(ids[5])
+	local reveStart, revDuration, revEnabled = safeGetSpellCooldown(ids[2])
 	local revengeUsable = IsUsableAction(WarriorTank_findActionSlot(revengeTexture));
 	
 	--if shield block not active and not on cd then shield block
