@@ -2,10 +2,13 @@
 WarriorTank = {}
 
 -- ====== Config ======
-local DEBUG = false  -- set true to see decisions in chat
+local DEBUG = true  -- set true to see decisions in chat
 
--- ====== Core constants & utilities ======
+-- ====== Core constants & API aliases ======
 local BOOK = BOOKTYPE_SPELL or "spell"
+
+-- Use a local alias so typos in global names can't break us
+local API_GetShapeshiftForm = _G.GetShapeshiftForm or function() return 0 end
 
 -- Simple spell index cache (name -> spellbook index)
 local WarriorTank_SpellIndexCache = {}
@@ -26,13 +29,14 @@ local function WarriorTank_RebuildSpellIndexCache()
   while true do
     local name, rank = GetSpellName(i, BOOK)
     if not name then break end
+    -- store latest index for this name (in 1.12, higher ranks are usually later)
     WarriorTank_SpellIndexCache[name] = i
     i = i + 1
   end
   D("Spell cache rebuilt.")
 end
 
--- Ensure cache stays fresh as the spellbook changes
+-- Keep cache fresh as the spellbook changes
 do
   local f = CreateFrame("Frame")
   f:RegisterEvent("PLAYER_LOGIN")
@@ -65,23 +69,28 @@ end
 
 -- ====== Stance & equipment checks ======
 local function WarriorTank_GetStance()
-  local form = GetShapeshiftForm()
-  if form == 2 then return "defensive"
-  elseif form == 3 then return "berserker"
-  else return "battle" end -- 1=battle, or 0 sometimes
+  -- 0/1=battle, 2=defensive, 3=berserker on 1.12
+  local form = API_GetShapeshiftForm()
+  if form == 2 then
+    return "defensive"
+  elseif form == 3 then
+    return "berserker"
+  else
+    return "battle"
+  end
 end
 
 local function WarriorTank_HasShield()
   local link = GetInventoryItemLink("player", 17) -- offhand
   if not link then return false end
-  local name, _, quality, ilvl, req, class, subclass = GetItemInfo(link)
-  return subclass == "Shields" -- Vanilla returns "Shields"
+  local name, _, _, _, _, class, subclass = GetItemInfo(link)
+  -- Vanilla returns subclass "Shields" (may be localized)
+  return subclass == "Shields"
 end
 
 local function WarriorTank_IsSpellUsableByName(spellName)
-  -- Vanilla doesn’t have IsUsableSpell reliably; simulate using action slot if present
-  -- Fallback: if we know it and it’s not on GCD/CD and stance/equip allow, assume usable
-  -- We’ll combine with stance/shield checks where needed.
+  -- Lightweight usable proxy: if not on cooldown, assume usable.
+  -- (We combine with stance/equipment checks where needed.)
   local _, dur = WarriorTank_GetCooldownByName(spellName)
   return dur == 0
 end
@@ -110,15 +119,18 @@ function WarriorTank_main()
 
   -- Choose intended main damage by talents, then fallback if unknown
   local intendedMain = "Shield Slam"
-  if (msCurrRank == 1) then intendedMain = "Mortal Strike"
-  elseif (btCurrRank == 1) then intendedMain = "Bloodthirst" end
+  if (msCurrRank == 1) then
+    intendedMain = "Mortal Strike"
+  elseif (btCurrRank == 1) then
+    intendedMain = "Bloodthirst"
+  end
 
   local mainDamage = intendedMain
   if not WarriorTank_Knows(mainDamage) then
     if     WarriorTank_Knows("Shield Slam")   then mainDamage = "Shield Slam"
     elseif WarriorTank_Knows("Mortal Strike") then mainDamage = "Mortal Strike"
     elseif WarriorTank_Knows("Bloodthirst")   then mainDamage = "Bloodthirst"
-    else   mainDamage = "Heroic Strike"
+    else   mainDamage = "Heroic Strike" -- fallback for low levels
     end
   end
 
@@ -131,8 +143,8 @@ function WarriorTank_main()
   local sunderRage = math.max(10, 15 - (impSunderCurrRank or 0))
 
   -- Cooldowns
-  local _, sbDur = WarriorTank_GetCooldownByName("Shield Block")
-  local _, revDur = WarriorTank_GetCooldownByName("Revenge")
+  local _, sbDur   = WarriorTank_GetCooldownByName("Shield Block")
+  local _, revDur  = WarriorTank_GetCooldownByName("Revenge")
   local _, mainDur = WarriorTank_GetCooldownByName(mainDamage)
 
   -- Revenge usable only if it’s on your bars (older API quirk); optional but safer
@@ -145,7 +157,12 @@ function WarriorTank_main()
 
   -- Buff/stance checks for Shield Block
   local sbTexture = "Ability_Defend"
-  local shieldBlockUsable = (stance == "defensive") and WarriorTank_HasShield() and WarriorTank_IsSpellUsableByName("Shield Block") and (sbDur == 0) and not WarriorTank_isBuffTextureActive(sbTexture)
+  local shieldBlockUsable =
+      (stance == "defensive") and
+      WarriorTank_HasShield() and
+      WarriorTank_IsSpellUsableByName("Shield Block") and
+      (sbDur == 0) and
+      not WarriorTank_isBuffTextureActive(sbTexture)
 
   D(string.format("stance=%s rage=%d main=%s sbUsable=%s revUsable=%d mainCD=%d",
       stance, rage, mainDamage, tostring(shieldBlockUsable), revengeUsable, mainDur))
@@ -219,5 +236,8 @@ function WarriorTank_findActionSlot(spellTexture)
   return 0
 end
 
--- Warm the cache for immediate use
+-- Warm the cache for immediate use (in case /tank is used right after login)
 WarriorTank_RebuildSpellIndexCache()
+
+-- Optional alias so both /script WarriorTank_main() and /script WarriorTank_Main() work
+WarriorTank_Main = WarriorTank_main
