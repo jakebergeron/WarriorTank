@@ -5,13 +5,7 @@ WarriorTankFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 WarriorTankFrame:RegisterEvent("ADDON_LOADED")
 
 WarriorTankFrame:SetScript("OnEvent", function(self, event, ...)
-	if event == "ADDON_LOADED" then
-		DEFAULT_CHAT_FRAME:AddMessage("WarriorTank addon loaded. Type /tank for usage.")
-		SlashCmdList["WARRIORTANK"] = function()
-			local msg = "To use WarriorTank addon, create a macro and type /script WarriorTank_main();"
-			DEFAULT_CHAT_FRAME:AddMessage(msg)
-		end
-		SLASH_WARRIORTANK1 = "/tank"
+	Add slash command '/tank' and chat message on addon load
 	end
 end)
 
@@ -45,11 +39,11 @@ function WarriorTank_main()
 	
 	-- Get spell cooldowns safely
 	local function safeGetSpellCooldown(spellId)
-	    if spellId ~= nil then
-	        return GetSpellCooldown(spellId, BOOKTYPE_SPELL)
-	    else
-	        return 0, 0, 0
-	    end
+		if spellId ~= nil then
+			return GetSpellCooldown(spellId, BOOKTYPE_SPELL)
+		else
+			return 0, 0, 0
+		end
 	end
 
 	local sbStart, sbDuration, sbEnabled = safeGetSpellCooldown(ids[1])
@@ -73,7 +67,10 @@ function WarriorTank_main()
 	--if rage >= 60 then heroic strike
 	if (rage >= 60) then cast(abilities[4]); end;
 
-end;
+end
+
+WarriorTank.WarriorTank_main = WarriorTank_main
+_G["WarriorTank_main"] = WarriorTank_main
 
 function WarriorTank_getSpellId(spell)
 	local i = 1
