@@ -3,6 +3,6 @@
 ## Title: WarriorTank
 ## Notes: Script function for one button smart Warrior tanking
 ## Dependencies: SuperMacro, KLHThreatMeter
-## Version: 1.0
+## Version: 1.1
 warriorTank.xml
 warriorTank.lua
