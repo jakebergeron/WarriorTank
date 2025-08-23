@@ -1,11 +1,18 @@
--- WarriorTank: safer, TurtleWoW-friendly version
+-- WarriorTank: safer, TurtleWoW-friendly version with stance/shield checks + debug
 WarriorTank = {}
+
+-- ====== Config ======
+local DEBUG = false  -- set true to see decisions in chat
 
 -- ====== Core constants & utilities ======
 local BOOK = BOOKTYPE_SPELL or "spell"
 
 -- Simple spell index cache (name -> spellbook index)
 local WarriorTank_SpellIndexCache = {}
+
+local function D(msg)
+  if DEBUG then DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99WT|r: "..tostring(msg)) end
+end
 
 local function WarriorTank_ClearCache()
   for k in pairs(WarriorTank_SpellIndexCache) do
@@ -19,10 +26,10 @@ local function WarriorTank_RebuildSpellIndexCache()
   while true do
     local name, rank = GetSpellName(i, BOOK)
     if not name then break end
-    -- store latest index for this name (in 1.12, higher ranks are usually later)
     WarriorTank_SpellIndexCache[name] = i
     i = i + 1
   end
+  D("Spell cache rebuilt.")
 end
 
 -- Ensure cache stays fresh as the spellbook changes
@@ -39,7 +46,6 @@ local function WarriorTank_Knows(spellName)
   if not spellName then return false end
   local idx = WarriorTank_SpellIndexCache[spellName]
   if idx then return true end
-  -- lazy rebuild attempt if cache is cold
   WarriorTank_RebuildSpellIndexCache()
   return WarriorTank_SpellIndexCache[spellName] ~= nil
 end
@@ -52,12 +58,32 @@ local function WarriorTank_GetCooldownByName(spellName)
     WarriorTank_RebuildSpellIndexCache()
     idx = WarriorTank_SpellIndexCache[spellName]
   end
-  if not idx then
-    -- Not known; treat as ready so callers can skip gracefully
-    return 0, 0, 1
-  end
+  if not idx then return 0, 0, 1 end
   local s, d, e = GetSpellCooldown(idx, BOOK)
   return s or 0, d or 0, e or 1
+end
+
+-- ====== Stance & equipment checks ======
+local function WarriorTank_GetStance()
+  local form = GetShapeshiftForm()
+  if form == 2 then return "defensive"
+  elseif form == 3 then return "berserker"
+  else return "battle" end -- 1=battle, or 0 sometimes
+end
+
+local function WarriorTank_HasShield()
+  local link = GetInventoryItemLink("player", 17) -- offhand
+  if not link then return false end
+  local name, _, quality, ilvl, req, class, subclass = GetItemInfo(link)
+  return subclass == "Shields" -- Vanilla returns "Shields"
+end
+
+local function WarriorTank_IsSpellUsableByName(spellName)
+  -- Vanilla doesn’t have IsUsableSpell reliably; simulate using action slot if present
+  -- Fallback: if we know it and it’s not on GCD/CD and stance/equip allow, assume usable
+  -- We’ll combine with stance/shield checks where needed.
+  local _, dur = WarriorTank_GetCooldownByName(spellName)
+  return dur == 0
 end
 
 -- ====== Addon bootstrap ======
@@ -75,81 +101,82 @@ end
 
 -- ====== Public API ======
 function WarriorTank_main()
-  -- Talent checks (tree 1=Arms, 2=Fury, 3=Protection; row/col based on Turtle/WotLK-like talents)
-  local msNameTalent, msIcon, msTier, msColumn, msCurrRank, msMaxRank = GetTalentInfo(1, 18)
-  local btNameTalent, btIcon, btTier, btColumn, btCurrRank, btMaxRank = GetTalentInfo(2, 17)
+  local stance = WarriorTank_GetStance()
+  local rage   = UnitMana("player") or 0
 
-  -- Choose an intended "main damage" ability by talents, then **validate known** and fallback
-  local intendedMain = "Shield Slam"             -- Prot default
+  -- Talent checks (tree 1=Arms, 2=Fury, 3=Protection)
+  local _,_,_,_, msCurrRank = GetTalentInfo(1, 18)
+  local _,_,_,_, btCurrRank = GetTalentInfo(2, 17)
+
+  -- Choose intended main damage by talents, then fallback if unknown
+  local intendedMain = "Shield Slam"
   if (msCurrRank == 1) then intendedMain = "Mortal Strike"
-  elseif (btCurrRank == 1) then intendedMain = "Bloodthirst"
-  end
+  elseif (btCurrRank == 1) then intendedMain = "Bloodthirst" end
 
   local mainDamage = intendedMain
   if not WarriorTank_Knows(mainDamage) then
-    -- Friendly fallbacks for lower levels
-    if     WarriorTank_Knows("Shield Slam")     then mainDamage = "Shield Slam"
-    elseif WarriorTank_Knows("Mortal Strike")   then mainDamage = "Mortal Strike"
-    elseif WarriorTank_Knows("Bloodthirst")     then mainDamage = "Bloodthirst"
-    else   mainDamage = "Heroic Strike" -- always available early
+    if     WarriorTank_Knows("Shield Slam")   then mainDamage = "Shield Slam"
+    elseif WarriorTank_Knows("Mortal Strike") then mainDamage = "Mortal Strike"
+    elseif WarriorTank_Knows("Bloodthirst")   then mainDamage = "Bloodthirst"
+    else   mainDamage = "Heroic Strike"
     end
   end
 
-  local abilities = { "Shield Block", "Revenge", "Sunder Armor", "Heroic Strike", mainDamage }
-
   local sunder = KLHTM_Sunder
   local cast   = CastSpellByName
-  local rage   = UnitMana("player") or 0
 
-  -- Textures used for buff/action checks
-  local sbTexture       = "Ability_Defend"
-  local revengeTexture  = "Ability_Warrior_Revenge"
+  -- Costs
+  local mainCost = (mainDamage == "Shield Slam") and 20 or 30
+  local _,_,_,_, impSunderCurrRank = GetTalentInfo(3, 10)
+  local sunderRage = math.max(10, 15 - (impSunderCurrRank or 0))
 
-  -- Main ability rage costs (approx; modded by talents if any)
-  local mainCost = 30
-  if (mainDamage == "Shield Slam") then mainCost = 20 end
+  -- Cooldowns
+  local _, sbDur = WarriorTank_GetCooldownByName("Shield Block")
+  local _, revDur = WarriorTank_GetCooldownByName("Revenge")
+  local _, mainDur = WarriorTank_GetCooldownByName(mainDamage)
 
-  -- Improved Sunder reduces rage cost by rank
-  local impSunderNameTalent, impSunderIcon, impSunderTier, impSunderColumn, impSunderCurrRank, impSunderMaxRank = GetTalentInfo(3, 10)
-  local sunderRage = (15 - (impSunderCurrRank or 0))
-  if sunderRage < 10 then sunderRage = 10 end -- safety floor
-
-  -- Cooldowns (safe by-name lookups; no invalid slot errors)
-  local sbStart,  sbDuration,  sbEnabled   = WarriorTank_GetCooldownByName("Shield Block")
-  local revStart, revDuration, revEnabled  = WarriorTank_GetCooldownByName("Revenge")
-  local mainStart, mainDuration, mainEnabled = WarriorTank_GetCooldownByName(mainDamage)
-
-  -- Is Revenge usable? Guard against nil/0 slots.
-  local revengeSlot   = WarriorTank_findActionSlot(revengeTexture)
+  -- Revenge usable only if it’s on your bars (older API quirk); optional but safer
+  local revengeTexture = "Ability_Warrior_Revenge"
+  local revengeSlot = WarriorTank_findActionSlot(revengeTexture)
   local revengeUsable = 0
   if revengeSlot and revengeSlot > 0 then
     revengeUsable = IsUsableAction(revengeSlot) and 1 or 0
   end
 
+  -- Buff/stance checks for Shield Block
+  local sbTexture = "Ability_Defend"
+  local shieldBlockUsable = (stance == "defensive") and WarriorTank_HasShield() and WarriorTank_IsSpellUsableByName("Shield Block") and (sbDur == 0) and not WarriorTank_isBuffTextureActive(sbTexture)
+
+  D(string.format("stance=%s rage=%d main=%s sbUsable=%s revUsable=%d mainCD=%d",
+      stance, rage, mainDamage, tostring(shieldBlockUsable), revengeUsable, mainDur))
+
   -- ====== Rotation ======
-  -- 1) Shield Block if not active, not on CD, and enough rage
-  if (not WarriorTank_isBuffTextureActive(sbTexture) and sbDuration == 0 and rage >= 10) then
+  -- 1) Shield Block (only if in Defensive + shield equipped)
+  if shieldBlockUsable and rage >= 10 then
+    D("Cast: Shield Block")
     cast("Shield Block")
 
-  -- 2) Main damage spender if ready and enough rage
-  elseif (rage >= mainCost and mainDuration == 0) then
+  -- 2) Main damage
+  elseif (rage >= mainCost and mainDur == 0) then
+    D("Cast: "..mainDamage)
     cast(mainDamage)
 
-  -- 3) Revenge if usable, off CD, and enough rage
-  elseif (rage >= 5 and revengeUsable == 1 and revDuration == 0) then
+  -- 3) Revenge
+  elseif (rage >= 5 and revengeUsable == 1 and revDur == 0) then
+    D("Cast: Revenge")
     cast("Revenge")
 
-  -- 4) Sunder for threat if we have rage
+  -- 4) Sunder
   elseif (rage >= sunderRage) then
-    if type(sunder) == "function" then
-      sunder()
-    else
-      cast("Sunder Armor")
-    end
+    D("Cast: Sunder Armor")
+    if type(sunder) == "function" then sunder() else cast("Sunder Armor") end
+  else
+    D("No action: insufficient rage/requirements.")
   end
 
-  -- 5) Heroic Strike as rage dump (queue)
+  -- 5) Rage dump
   if (rage >= 60) then
+    D("Queue: Heroic Strike")
     cast("Heroic Strike")
   end
 end
@@ -171,16 +198,14 @@ function WarriorTank_isBuffTextureActive(texture)
   if not texture then return false end
   local i = 0
   local g = GetPlayerBuff
-  local isBuffActive = false
   while not (g(i) == -1) do
     local tex = GetPlayerBuffTexture(g(i))
     if tex and strfind(tex, texture) then
-      isBuffActive = true
-      break
+      return true
     end
     i = i + 1
   end
-  return isBuffActive
+  return false
 end
 
 function WarriorTank_findActionSlot(spellTexture)
@@ -194,5 +219,5 @@ function WarriorTank_findActionSlot(spellTexture)
   return 0
 end
 
--- Warm the cache early for first use (in case /tank is used immediately after login)
+-- Warm the cache for immediate use
 WarriorTank_RebuildSpellIndexCache()
