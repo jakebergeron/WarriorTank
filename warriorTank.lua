@@ -2,7 +2,7 @@
 WarriorTank = {}
 
 -- ====== Config ======
-local DEBUG = true  -- set true to see decisions in chat
+local DEBUG = false  -- set true to see decisions in chat
 
 -- ====== Core constants & API aliases ======
 local BOOK = BOOKTYPE_SPELL or "spell"
