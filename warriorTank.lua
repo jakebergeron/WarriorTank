@@ -114,14 +114,14 @@ function WarriorTank_main()
   local rage   = UnitMana("player") or 0
 
   -- Talent checks (tree 1=Arms, 2=Fury, 3=Protection)
-  local _,_,_,_, msCurrRank = GetTalentInfo(1, 18)
-  local _,_,_,_, btCurrRank = GetTalentInfo(2, 17)
+  local msCurrRank = select(5, GetTalentInfo(1, 18)) or 0
+  local btCurrRank = select(5, GetTalentInfo(2, 17)) or 0
 
-  -- Choose intended main damage by talents, then fallback if unknown
+  -- Choose intended main damage by talents (any rank > 0), then fallback if unknown
   local intendedMain = "Shield Slam"
-  if (msCurrRank == 1) then
+  if (msCurrRank and msCurrRank > 0) then
     intendedMain = "Mortal Strike"
-  elseif (btCurrRank == 1) then
+  elseif (btCurrRank and btCurrRank > 0) then
     intendedMain = "Bloodthirst"
   end
 
